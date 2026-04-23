@@ -106,9 +106,12 @@ static bool write_back_dirty_l1_children_to_l2(cache_line_t *set_lines, cache_me
     if (l1d_line != NULL && l1d_line->modified) {
         l2_stats.accesses++;
         memcpy(set_lines[victim].data, l1d_line->data, LINE_SIZE);
-        set_lines[victim].modified = 1;
+        for (int b = 0; b < LINE_SIZE; b++) {
+            write_memory(victim_addr + b, set_lines[victim].data[b]);
+        }
+        set_lines[victim].modified = 0;
         update_lru(set_meta, HW11_L2_ASSOC, victim);
-        l1d_line->modified = 0;
+        invalidate_line(l1d_lines, l1d_meta, HW11_L1_DATA_ASSOC, L1D_INDEX, victim_addr);
         wrote_back = true;
     }
 
@@ -116,8 +119,12 @@ static bool write_back_dirty_l1_children_to_l2(cache_line_t *set_lines, cache_me
     if (l1i_line != NULL && l1i_line->modified) {
         l2_stats.accesses++;
         memcpy(set_lines[victim].data, l1i_line->data, LINE_SIZE);
-        set_lines[victim].modified = 1;
+        for (int b = 0; b < LINE_SIZE; b++) {
+            write_memory(victim_addr + b, set_lines[victim].data[b]);
+        }
+        set_lines[victim].modified = 0;
         update_lru(set_meta, HW11_L2_ASSOC, victim);
+        invalidate_line(l1i_lines, l1i_meta, HW11_L1_INSTR_ASSOC, L1I_INDEX, victim_addr);
         wrote_back = true;
     }
 
@@ -178,7 +185,6 @@ int pick_victim(cache_line_t *set_lines, cache_metadata *set_meta, int ways) {
 // STUDENT TODO: initialize cache with replacement policy
 void init_cache(replacement_policy_e policy) {
     global_policy = policy;
-    srand(1);
     // zero everything
     memset(l1i_lines, 0, sizeof(l1i_lines)); memset(l1i_meta, 0, sizeof(l1i_meta));
     memset(l1d_lines, 0, sizeof(l1d_lines)); memset(l1d_meta, 0, sizeof(l1d_meta));
