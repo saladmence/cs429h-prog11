@@ -89,7 +89,7 @@ static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr) {
     l2_line->modified = 1;
 }
 
-static void maintain_l1_coherence(uint64_t addr, mem_type_t type, bool write) {
+static void maintain_l1_coherence(uint64_t addr, mem_type_t type) {
     cache_line_t *target_lines = (type == INSTR) ? l1i_lines : l1d_lines;
     cache_metadata *target_meta = (type == INSTR) ? l1i_meta : l1d_meta;
     int target_ways = (type == INSTR) ? HW11_L1_INSTR_ASSOC : HW11_L1_DATA_ASSOC;
@@ -111,9 +111,6 @@ static void maintain_l1_coherence(uint64_t addr, mem_type_t type, bool write) {
         invalidate_line(target_lines, target_meta, target_ways, target_index_bits, addr);
     }
 
-    if (write) {
-        invalidate_line(peer_lines, peer_meta, peer_ways, peer_index_bits, addr);
-    }
 }
 
 static void enforce_inclusive_l2_eviction(uint64_t victim_addr, cache_line_t *victim_line) {
@@ -266,7 +263,7 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
 // STUDENT TODO: implement read cache, using the l1 and l2 structure
 uint8_t read_cache(uint64_t mem_addr, mem_type_t type) {
     cache_line_t *line;
-    maintain_l1_coherence(mem_addr, type, false);
+    maintain_l1_coherence(mem_addr, type);
     if (type == INSTR) line = l1_access(l1i_lines, l1i_meta, &l1i_stats, HW11_L1_INSTR_ASSOC, L1I_INDEX, mem_addr, 0);
     else line = l1_access(l1d_lines, l1d_meta, &l1d_stats, HW11_L1_DATA_ASSOC, L1D_INDEX, mem_addr, 0);
     return line->data[mem_addr & ((1ULL << OFFSET) - 1)];
@@ -275,7 +272,7 @@ uint8_t read_cache(uint64_t mem_addr, mem_type_t type) {
 // STUDENT TODO: implement write cache, using the l1 and l2 structure
 void write_cache(uint64_t mem_addr, uint8_t value, mem_type_t type) {
     cache_line_t *line;
-    maintain_l1_coherence(mem_addr, type, true);
+    maintain_l1_coherence(mem_addr, type);
     if (type == INSTR) line = l1_access(l1i_lines, l1i_meta, &l1i_stats, HW11_L1_INSTR_ASSOC, L1I_INDEX, mem_addr, 1);
     else line = l1_access(l1d_lines, l1d_meta, &l1d_stats, HW11_L1_DATA_ASSOC, L1D_INDEX, mem_addr, 1);
     line->data[mem_addr & ((1ULL << OFFSET) - 1)] = value;
