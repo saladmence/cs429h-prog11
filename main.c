@@ -914,25 +914,6 @@ int test_random_reinit_is_deterministic(void) {
 }
 
 // =============================================================================
-// TEST 38: L1 write immediately synchronizes L2
-// =============================================================================
-int test_write_updates_l2_immediately(void) {
-    init_cache(LRU);
-
-    uint64_t addr = 0x1C000;
-
-    memory[addr] = 0x12;
-    write_cache(addr, 0xA7, DATA);
-
-    cache_line_t* l2_line = get_l2_cache_line(addr);
-    if (l2_line == NULL) FAIL("L2 line should exist after write-allocate");
-    if (l2_line->data[0] != 0xA7) FAIL("L2 should reflect the written byte immediately");
-    if (!l2_line->modified) FAIL("L2 line should be marked modified after synchronized write");
-
-    PASS; return 1;
-}
-
-// =============================================================================
 // TEST 30: Stress test - many accesses
 // =============================================================================
 int test_stress(void) {
@@ -1032,7 +1013,6 @@ int main(int argc, char *argv[]) {
     // Random policy
     run_test(test_random_policy, "test_random_policy");
     run_test(test_random_reinit_is_deterministic, "test_random_reinit_is_deterministic");
-    run_test(test_write_updates_l2_immediately, "test_write_updates_l2_immediately");
 
     // Edge cases
     run_test(test_large_addresses, "test_large_addresses");

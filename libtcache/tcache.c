@@ -98,13 +98,6 @@ static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr, mem_type
     invalidate_peer_l1_copy(source_type, addr);
 }
 
-static void synchronize_write_to_l2(cache_line_t *line, uint64_t addr, mem_type_t type) {
-    cache_line_t *l2_line = l2_access(addr, true);
-    memcpy(l2_line->data, line->data, LINE_SIZE);
-    l2_line->modified = 1;
-    invalidate_peer_l1_copy(type, addr);
-}
-
 static void maintain_l1_coherence(uint64_t addr, mem_type_t type) {
     cache_line_t *target_lines = (type == INSTR) ? l1i_lines : l1d_lines;
     cache_metadata *target_meta = (type == INSTR) ? l1i_meta : l1d_meta;
@@ -293,7 +286,6 @@ void write_cache(uint64_t mem_addr, uint8_t value, mem_type_t type) {
     if (type == INSTR) line = l1_access(l1i_lines, l1i_meta, &l1i_stats, HW11_L1_INSTR_ASSOC, L1I_INDEX, mem_addr, 1, INSTR);
     else line = l1_access(l1d_lines, l1d_meta, &l1d_stats, HW11_L1_DATA_ASSOC, L1D_INDEX, mem_addr, 1, DATA);
     line->data[mem_addr & ((1ULL << OFFSET) - 1)] = value;
-    synchronize_write_to_l2(line, mem_addr, type);
 }
 
 // STUDENT TODO: implement functions to get cache stats
