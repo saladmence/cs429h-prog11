@@ -37,6 +37,7 @@ static cache_stats_t l2_stats;
 static replacement_policy_e global_policy;
 
 static cache_line_t *l2_access(uint64_t addr, bool write_back);
+static void update_lru(cache_metadata *set_meta, int ways, int start);
 
 uint64_t get_index(uint64_t addr, int index) {
     //uint64_t offset = addr & ((1ULL << OFFSET) - 1);
@@ -98,6 +99,31 @@ static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr, mem_type
     invalidate_peer_l1_copy(source_type, addr);
 }
 
+static bool write_back_dirty_l1_children_to_l2(cache_line_t *set_lines, cache_metadata *set_meta, int victim, uint64_t victim_addr) {
+    bool wrote_back = false;
+
+    cache_line_t *l1d_line = find_line(l1d_lines, l1d_meta, HW11_L1_DATA_ASSOC, L1D_INDEX, victim_addr);
+    if (l1d_line != NULL && l1d_line->modified) {
+        l2_stats.accesses++;
+        memcpy(set_lines[victim].data, l1d_line->data, LINE_SIZE);
+        set_lines[victim].modified = 1;
+        update_lru(set_meta, HW11_L2_ASSOC, victim);
+        l1d_line->modified = 0;
+        wrote_back = true;
+    }
+
+    cache_line_t *l1i_line = find_line(l1i_lines, l1i_meta, HW11_L1_INSTR_ASSOC, L1I_INDEX, victim_addr);
+    if (l1i_line != NULL && l1i_line->modified) {
+        l2_stats.accesses++;
+        memcpy(set_lines[victim].data, l1i_line->data, LINE_SIZE);
+        set_lines[victim].modified = 1;
+        update_lru(set_meta, HW11_L2_ASSOC, victim);
+        wrote_back = true;
+    }
+
+    return wrote_back;
+}
+
 static void maintain_l1_coherence(uint64_t addr, mem_type_t type) {
     cache_line_t *target_lines = (type == INSTR) ? l1i_lines : l1d_lines;
     cache_metadata *target_meta = (type == INSTR) ? l1i_meta : l1d_meta;
@@ -122,24 +148,12 @@ static void maintain_l1_coherence(uint64_t addr, mem_type_t type) {
 
 }
 
-static void enforce_inclusive_l2_eviction(uint64_t victim_addr, cache_line_t *victim_line) {
-    cache_line_t *l1d_line = find_line(l1d_lines, l1d_meta, HW11_L1_DATA_ASSOC, L1D_INDEX, victim_addr);
-    if (l1d_line != NULL && l1d_line->modified) {
-        memcpy(victim_line->data, l1d_line->data, LINE_SIZE);
-        victim_line->modified = 1;
-    }
-
-    cache_line_t *l1i_line = find_line(l1i_lines, l1i_meta, HW11_L1_INSTR_ASSOC, L1I_INDEX, victim_addr);
-    if (l1i_line != NULL && l1i_line->modified) {
-        memcpy(victim_line->data, l1i_line->data, LINE_SIZE);
-        victim_line->modified = 1;
-    }
-
+static void enforce_inclusive_l2_eviction(uint64_t victim_addr) {
     invalidate_line(l1d_lines, l1d_meta, HW11_L1_DATA_ASSOC, L1D_INDEX, victim_addr);
     invalidate_line(l1i_lines, l1i_meta, HW11_L1_INSTR_ASSOC, L1I_INDEX, victim_addr);
 }
 
-void update_lru(cache_metadata *set_meta, int ways, int start) {
+static void update_lru(cache_metadata *set_meta, int ways, int start) {
     uint32_t old_counter = set_meta[start].lru;
     for (int w = 0; w < ways; w++) {
         if (set_meta[w].lru < old_counter) set_meta[w].lru++;
@@ -206,10 +220,20 @@ cache_line_t *l2_access(uint64_t addr, bool write_back) {
 
     l2_stats.misses++;
     int victim = pick_victim(set_lines, set_meta, HW11_L2_ASSOC);
+    int attempts = 0;
+
+    while (set_lines[victim].valid && attempts < HW11_L2_ASSOC) {
+        uint64_t victim_addr = reconstruct_addr(set_meta[victim].tag, index, L2_INDEX);
+        if (!write_back_dirty_l1_children_to_l2(set_lines, set_meta, victim, victim_addr)) {
+            break;
+        }
+        victim = pick_victim(set_lines, set_meta, HW11_L2_ASSOC);
+        attempts++;
+    }
 
     if (set_lines[victim].valid) {
         uint64_t writeback = reconstruct_addr(set_meta[victim].tag, index, L2_INDEX);
-        enforce_inclusive_l2_eviction(writeback, &set_lines[victim]);
+        enforce_inclusive_l2_eviction(writeback);
     }
 
     if (set_lines[victim].valid && set_lines[victim].modified) {
@@ -286,6 +310,7 @@ void write_cache(uint64_t mem_addr, uint8_t value, mem_type_t type) {
     if (type == INSTR) line = l1_access(l1i_lines, l1i_meta, &l1i_stats, HW11_L1_INSTR_ASSOC, L1I_INDEX, mem_addr, 1, INSTR);
     else line = l1_access(l1d_lines, l1d_meta, &l1d_stats, HW11_L1_DATA_ASSOC, L1D_INDEX, mem_addr, 1, DATA);
     line->data[mem_addr & ((1ULL << OFFSET) - 1)] = value;
+    invalidate_peer_l1_copy(type, mem_addr);
 }
 
 // STUDENT TODO: implement functions to get cache stats
