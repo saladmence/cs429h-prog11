@@ -166,19 +166,8 @@ static void update_lru(cache_metadata *set_meta, int ways, int start) {
 
 int pick_victim(cache_line_t *set_lines, cache_metadata *set_meta, int ways) {
     int victim = 0;
-    int invalid_ways[HW11_L2_ASSOC];
-    int invalid_count = 0;
     for (int i = 0; i < ways; i++) {
-        if (!set_lines[i].valid) {
-            invalid_ways[invalid_count++] = i;
-        }
-    }
-
-    if (invalid_count > 0) {
-        if (global_policy == RANDOM) {
-            return invalid_ways[rand() % invalid_count];
-        }
-        return invalid_ways[0];
+        if (!set_lines[i].valid) return i;
     }
 
     if (global_policy == LRU) {
@@ -192,9 +181,6 @@ int pick_victim(cache_line_t *set_lines, cache_metadata *set_meta, int ways) {
 // STUDENT TODO: initialize cache with replacement policy
 void init_cache(replacement_policy_e policy) {
     global_policy = policy;
-    if (policy == RANDOM) {
-        srand(1);
-    }
     // zero everything
     memset(l1i_lines, 0, sizeof(l1i_lines)); memset(l1i_meta, 0, sizeof(l1i_meta));
     memset(l1d_lines, 0, sizeof(l1d_lines)); memset(l1d_meta, 0, sizeof(l1d_meta));
@@ -291,10 +277,9 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
     memcpy(fetched_data, l2_line->data, LINE_SIZE);
 
     int victim = pick_victim(set_lines, set_meta, ways);
-    uint64_t victim_tag = set_meta[victim].tag;
 
     if (set_lines[victim].valid && set_lines[victim].modified) { // writeback to l2
-        uint64_t wb = reconstruct_addr(victim_tag, index, index_bits);
+        uint64_t wb = reconstruct_addr(set_meta[victim].tag, index, index_bits);
         write_back_l1_line_to_l2(&set_lines[victim], wb, type);
     }
 
