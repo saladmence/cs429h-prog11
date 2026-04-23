@@ -99,16 +99,22 @@ static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr, mem_type
     invalidate_peer_l1_copy(source_type, addr);
 }
 
-static bool write_back_dirty_l1_children_to_l2(cache_line_t *set_lines, cache_metadata *set_meta, int victim, uint64_t victim_addr) {
-    bool wrote_back = false;
+typedef struct {
+    bool retouched_l1d;
+    bool invalidated_l1i;
+} l2_child_result_t;
+
+static l2_child_result_t write_back_dirty_l1_children_to_l2(cache_line_t *set_lines, cache_metadata *set_meta, int victim, uint64_t victim_addr) {
+    l2_child_result_t result = { false, false };
 
     cache_line_t *l1d_line = find_line(l1d_lines, l1d_meta, HW11_L1_DATA_ASSOC, L1D_INDEX, victim_addr);
     if (l1d_line != NULL && l1d_line->modified) {
         l2_stats.accesses++;
         memcpy(set_lines[victim].data, l1d_line->data, LINE_SIZE);
         set_lines[victim].modified = 1;
-        invalidate_line(l1d_lines, l1d_meta, HW11_L1_DATA_ASSOC, L1D_INDEX, victim_addr);
-        wrote_back = true;
+        l1d_line->modified = 0;
+        update_lru(set_meta, HW11_L2_ASSOC, victim);
+        result.retouched_l1d = true;
     }
 
     cache_line_t *l1i_line = find_line(l1i_lines, l1i_meta, HW11_L1_INSTR_ASSOC, L1I_INDEX, victim_addr);
@@ -117,10 +123,10 @@ static bool write_back_dirty_l1_children_to_l2(cache_line_t *set_lines, cache_me
         memcpy(set_lines[victim].data, l1i_line->data, LINE_SIZE);
         set_lines[victim].modified = 1;
         invalidate_line(l1i_lines, l1i_meta, HW11_L1_INSTR_ASSOC, L1I_INDEX, victim_addr);
-        wrote_back = true;
+        result.invalidated_l1i = true;
     }
 
-    return wrote_back;
+    return result;
 }
 
 static void maintain_l1_coherence(uint64_t addr, mem_type_t type) {
@@ -221,7 +227,10 @@ cache_line_t *l2_access(uint64_t addr, bool write_back) {
 
     if (set_lines[victim].valid) {
         uint64_t victim_addr = reconstruct_addr(set_meta[victim].tag, index, L2_INDEX);
-        write_back_dirty_l1_children_to_l2(set_lines, set_meta, victim, victim_addr);
+        l2_child_result_t child_result = write_back_dirty_l1_children_to_l2(set_lines, set_meta, victim, victim_addr);
+        if (child_result.retouched_l1d && !child_result.invalidated_l1i) {
+            victim = pick_victim(set_lines, set_meta, HW11_L2_ASSOC);
+        }
     }
 
     if (set_lines[victim].valid) {
@@ -292,16 +301,7 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
 
     if (set_lines[victim].valid && set_lines[victim].modified) { // writeback to l2
         uint64_t wb = reconstruct_addr(set_meta[victim].tag, index, index_bits);
-        l2_stats.accesses++;
-        cache_line_t *l2_line = find_line(l2_lines, l2_meta, HW11_L2_ASSOC, L2_INDEX, wb);
-        if (l2_line == NULL) {
-            l2_stats.accesses--;
-            l2_line = l2_access(wb, true);
-        }
-        memcpy(l2_line->data, set_lines[victim].data, LINE_SIZE);
-        l2_line->modified = 1;
-        set_lines[victim].modified = 0;
-        invalidate_peer_l1_copy(type, wb);
+        write_back_l1_line_to_l2(&set_lines[victim], wb, type);
     }
 
     if (fetched_from_l2) {
