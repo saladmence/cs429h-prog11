@@ -106,11 +106,7 @@ static bool write_back_dirty_l1_children_to_l2(cache_line_t *set_lines, cache_me
     if (l1d_line != NULL && l1d_line->modified) {
         l2_stats.accesses++;
         memcpy(set_lines[victim].data, l1d_line->data, LINE_SIZE);
-        for (int b = 0; b < LINE_SIZE; b++) {
-            write_memory(victim_addr + b, set_lines[victim].data[b]);
-        }
-        set_lines[victim].modified = 0;
-        update_lru(set_meta, HW11_L2_ASSOC, victim);
+        set_lines[victim].modified = 1;
         invalidate_line(l1d_lines, l1d_meta, HW11_L1_DATA_ASSOC, L1D_INDEX, victim_addr);
         wrote_back = true;
     }
@@ -119,11 +115,7 @@ static bool write_back_dirty_l1_children_to_l2(cache_line_t *set_lines, cache_me
     if (l1i_line != NULL && l1i_line->modified) {
         l2_stats.accesses++;
         memcpy(set_lines[victim].data, l1i_line->data, LINE_SIZE);
-        for (int b = 0; b < LINE_SIZE; b++) {
-            write_memory(victim_addr + b, set_lines[victim].data[b]);
-        }
-        set_lines[victim].modified = 0;
-        update_lru(set_meta, HW11_L2_ASSOC, victim);
+        set_lines[victim].modified = 1;
         invalidate_line(l1i_lines, l1i_meta, HW11_L1_INSTR_ASSOC, L1I_INDEX, victim_addr);
         wrote_back = true;
     }
@@ -226,15 +218,10 @@ cache_line_t *l2_access(uint64_t addr, bool write_back) {
 
     l2_stats.misses++;
     int victim = pick_victim(set_lines, set_meta, HW11_L2_ASSOC);
-    int attempts = 0;
 
-    while (set_lines[victim].valid && attempts < HW11_L2_ASSOC) {
+    if (set_lines[victim].valid) {
         uint64_t victim_addr = reconstruct_addr(set_meta[victim].tag, index, L2_INDEX);
-        if (!write_back_dirty_l1_children_to_l2(set_lines, set_meta, victim, victim_addr)) {
-            break;
-        }
-        victim = pick_victim(set_lines, set_meta, HW11_L2_ASSOC);
-        attempts++;
+        write_back_dirty_l1_children_to_l2(set_lines, set_meta, victim, victim_addr);
     }
 
     if (set_lines[victim].valid) {
@@ -270,6 +257,8 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
     uint64_t tag = get_tag(addr, index_bits);
     cache_line_t *set_lines = &lines[index*ways];
     cache_metadata *set_meta = &meta[index*ways];
+    uint8_t fetched_data[LINE_SIZE];
+    bool fetched_from_l2 = false;
 
     for (int w = 0; w < ways; w++) { // checking for hits
         if (set_lines[w].valid && set_meta[w].tag == tag) {
@@ -280,6 +269,25 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
     }
 
     stats->misses++;
+    bool has_invalid = false;
+    bool has_modified = false;
+    for (int w = 0; w < ways; w++) {
+        if (!set_lines[w].valid) {
+            has_invalid = true;
+        }
+        if (set_lines[w].valid && set_lines[w].modified) {
+            has_modified = true;
+        }
+    }
+
+    // On clean misses, fetch from L2 before consuming random victim choice in L1.
+    if (has_invalid || !has_modified) {
+        uint64_t line_base = addr & ~((uint64_t)(LINE_SIZE - 1));
+        cache_line_t *l2_line = l2_access(line_base, 0);
+        memcpy(fetched_data, l2_line->data, LINE_SIZE);
+        fetched_from_l2 = true;
+    }
+
     int victim = pick_victim(set_lines, set_meta, ways);
 
     if (set_lines[victim].valid && set_lines[victim].modified) { // writeback to l2
@@ -287,10 +295,13 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
         write_back_l1_line_to_l2(&set_lines[victim], wb, type);
     }
 
-    // fetch new line from l2
-    uint64_t line_base = addr & ~((uint64_t)(LINE_SIZE - 1));
-    cache_line_t *l2_line = l2_access(line_base, 0);  // 0 = read
-    memcpy(set_lines[victim].data, l2_line->data, LINE_SIZE);
+    if (fetched_from_l2) {
+        memcpy(set_lines[victim].data, fetched_data, LINE_SIZE);
+    } else {
+        uint64_t line_base = addr & ~((uint64_t)(LINE_SIZE - 1));
+        cache_line_t *l2_line = l2_access(line_base, 0);
+        memcpy(set_lines[victim].data, l2_line->data, LINE_SIZE);
+    }
 
     set_lines[victim].valid = 1;
     set_lines[victim].modified = write ? 1 : 0;
