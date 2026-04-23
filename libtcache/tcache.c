@@ -93,12 +93,7 @@ static void invalidate_peer_l1_copy(mem_type_t source_type, uint64_t addr) {
 }
 
 static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr, mem_type_t source_type) {
-    l2_stats.accesses++;
-    cache_line_t *l2_line = find_line(l2_lines, l2_meta, HW11_L2_ASSOC, L2_INDEX, addr);
-    if (l2_line == NULL) {
-        l2_stats.accesses--;
-        l2_line = l2_access(addr, true);
-    }
+    cache_line_t *l2_line = l2_access(addr, true);
     memcpy(l2_line->data, line->data, LINE_SIZE);
     l2_line->modified = 1;
     invalidate_peer_l1_copy(source_type, addr);
@@ -305,6 +300,7 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
         }
         memcpy(l2_line->data, set_lines[victim].data, LINE_SIZE);
         l2_line->modified = 1;
+        set_lines[victim].modified = 0;
         invalidate_peer_l1_copy(type, wb);
     }
 
