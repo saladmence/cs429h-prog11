@@ -830,6 +830,33 @@ int test_cache_line_tag_field(void) {
 }
 
 // =============================================================================
+// TEST 35: Writing through stale peer must refetch newest line first
+// =============================================================================
+int test_write_through_stale_peer_refetches(void) {
+    init_cache(LRU);
+
+    uint64_t addr = 0x14000;
+
+    memory[addr] = 0x11;
+    memory[addr + 1] = 0x22;
+
+    // Both L1 caches start with the same clean line.
+    if (read_cache(addr, DATA) != 0x11) FAIL("initial data read mismatch");
+    if (read_cache(addr, INSTR) != 0x11) FAIL("initial instr read mismatch");
+
+    // Modify through L1I so L1D now holds a stale clean copy.
+    write_cache(addr + 1, 0x99, INSTR);
+
+    // A write through L1D must not merge into the stale cached bytes.
+    write_cache(addr, 0x55, DATA);
+
+    if (read_cache(addr, DATA) != 0x55) FAIL("written byte incorrect");
+    if (read_cache(addr + 1, DATA) != 0x99) FAIL("peer-modified byte should be preserved");
+
+    PASS; return 1;
+}
+
+// =============================================================================
 // TEST 30: Stress test - many accesses
 // =============================================================================
 int test_stress(void) {
@@ -910,6 +937,7 @@ int main(int argc, char *argv[]) {
     run_test(test_l2_inclusive_eviction_invalidates_l1, "test_l2_inclusive_eviction_invalidates_l1");
     run_test(test_l2_inclusive_eviction_dirty_preserves_data, "test_l2_inclusive_eviction_dirty_preserves_data");
     run_test(test_cache_line_tag_field, "test_cache_line_tag_field");
+    run_test(test_write_through_stale_peer_refetches, "test_write_through_stale_peer_refetches");
 
     // Cache structure
     run_test(test_l1i_direct_mapped, "test_l1i_direct_mapped");

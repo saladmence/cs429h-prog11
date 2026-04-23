@@ -108,9 +108,7 @@ static void maintain_l1_coherence(uint64_t addr, mem_type_t type, bool write) {
     if (peer_line->modified) {
         write_back_l1_line_to_l2(peer_line, addr);
         peer_line->modified = 0;
-        if (!write) {
-            invalidate_line(target_lines, target_meta, target_ways, target_index_bits, addr);
-        }
+        invalidate_line(target_lines, target_meta, target_ways, target_index_bits, addr);
     }
 
     if (write) {
