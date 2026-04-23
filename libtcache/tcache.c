@@ -148,7 +148,6 @@ static void maintain_l1_coherence(uint64_t addr, mem_type_t type) {
         peer_line->modified = 0;
         invalidate_line(target_lines, target_meta, target_ways, target_index_bits, addr);
     }
-
 }
 
 static void enforce_inclusive_l2_eviction(uint64_t victim_addr) {
@@ -169,6 +168,8 @@ int pick_victim(cache_line_t *set_lines, cache_metadata *set_meta, int ways) {
     for (int i = 0; i < ways; i++) {
         if (!set_lines[i].valid) return i;
     }
+
+    if (ways == 1) return 0; // FIX: Do not consume rand() for direct-mapped caches
 
     if (global_policy == LRU) {
         for (int w = 1; w < ways; w++) {
@@ -271,10 +272,6 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
     }
 
     stats->misses++;
-    uint8_t fetched_data[LINE_SIZE];
-    uint64_t line_base = addr & ~((uint64_t)(LINE_SIZE - 1));
-    cache_line_t *l2_line = l2_access(line_base, 0);
-    memcpy(fetched_data, l2_line->data, LINE_SIZE);
 
     int victim = pick_victim(set_lines, set_meta, ways);
 
@@ -283,7 +280,10 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
         write_back_l1_line_to_l2(&set_lines[victim], wb, type);
     }
 
-    memcpy(set_lines[victim].data, fetched_data, LINE_SIZE);
+    uint64_t line_base = addr & ~((uint64_t)(LINE_SIZE - 1));
+    cache_line_t *l2_line = l2_access(line_base, 0);
+
+    memcpy(set_lines[victim].data, l2_line->data, LINE_SIZE);
     set_lines[victim].valid = 1;
     set_lines[victim].modified = write ? 1 : 0;
     set_lines[victim].tag = tag;
