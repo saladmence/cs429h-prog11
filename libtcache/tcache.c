@@ -83,10 +83,19 @@ static cache_line_t *find_line(cache_line_t *lines, cache_metadata *meta, int wa
     return NULL;
 }
 
-static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr) {
+static void invalidate_peer_l1_copy(mem_type_t source_type, uint64_t addr) {
+    if (source_type == INSTR) {
+        invalidate_line(l1d_lines, l1d_meta, HW11_L1_DATA_ASSOC, L1D_INDEX, addr);
+    } else {
+        invalidate_line(l1i_lines, l1i_meta, HW11_L1_INSTR_ASSOC, L1I_INDEX, addr);
+    }
+}
+
+static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr, mem_type_t source_type) {
     cache_line_t *l2_line = l2_access(addr, true);
     memcpy(l2_line->data, line->data, LINE_SIZE);
     l2_line->modified = 1;
+    invalidate_peer_l1_copy(source_type, addr);
 }
 
 static void maintain_l1_coherence(uint64_t addr, mem_type_t type) {
@@ -106,7 +115,7 @@ static void maintain_l1_coherence(uint64_t addr, mem_type_t type) {
     }
 
     if (peer_line->modified) {
-        write_back_l1_line_to_l2(peer_line, addr);
+        write_back_l1_line_to_l2(peer_line, addr, (type == INSTR) ? DATA : INSTR);
         peer_line->modified = 0;
         invalidate_line(target_lines, target_meta, target_ways, target_index_bits, addr);
     }
@@ -155,6 +164,7 @@ int pick_victim(cache_line_t *set_lines, cache_metadata *set_meta, int ways) {
 // STUDENT TODO: initialize cache with replacement policy
 void init_cache(replacement_policy_e policy) {
     global_policy = policy;
+    srand(1);
     // zero everything
     memset(l1i_lines, 0, sizeof(l1i_lines)); memset(l1i_meta, 0, sizeof(l1i_meta));
     memset(l1d_lines, 0, sizeof(l1d_lines)); memset(l1d_meta, 0, sizeof(l1d_meta));
@@ -224,7 +234,7 @@ cache_line_t *l2_access(uint64_t addr, bool write_back) {
     return &set_lines[victim];
 }
 
-cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t *stats, int ways, int index_bits, uint64_t addr, bool write) {
+cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t *stats, int ways, int index_bits, uint64_t addr, bool write, mem_type_t type) {
     stats->accesses++;
     uint64_t index = get_index(addr, index_bits);
     uint64_t tag = get_tag(addr, index_bits);
@@ -244,7 +254,7 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
 
     if (set_lines[victim].valid && set_lines[victim].modified) { // writeback to l2
         uint64_t wb = reconstruct_addr(set_meta[victim].tag, index, index_bits);
-        write_back_l1_line_to_l2(&set_lines[victim], wb);
+        write_back_l1_line_to_l2(&set_lines[victim], wb, type);
     }
 
     // fetch new line from l2
@@ -264,8 +274,8 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
 uint8_t read_cache(uint64_t mem_addr, mem_type_t type) {
     cache_line_t *line;
     maintain_l1_coherence(mem_addr, type);
-    if (type == INSTR) line = l1_access(l1i_lines, l1i_meta, &l1i_stats, HW11_L1_INSTR_ASSOC, L1I_INDEX, mem_addr, 0);
-    else line = l1_access(l1d_lines, l1d_meta, &l1d_stats, HW11_L1_DATA_ASSOC, L1D_INDEX, mem_addr, 0);
+    if (type == INSTR) line = l1_access(l1i_lines, l1i_meta, &l1i_stats, HW11_L1_INSTR_ASSOC, L1I_INDEX, mem_addr, 0, INSTR);
+    else line = l1_access(l1d_lines, l1d_meta, &l1d_stats, HW11_L1_DATA_ASSOC, L1D_INDEX, mem_addr, 0, DATA);
     return line->data[mem_addr & ((1ULL << OFFSET) - 1)];
 }
 
@@ -273,8 +283,8 @@ uint8_t read_cache(uint64_t mem_addr, mem_type_t type) {
 void write_cache(uint64_t mem_addr, uint8_t value, mem_type_t type) {
     cache_line_t *line;
     maintain_l1_coherence(mem_addr, type);
-    if (type == INSTR) line = l1_access(l1i_lines, l1i_meta, &l1i_stats, HW11_L1_INSTR_ASSOC, L1I_INDEX, mem_addr, 1);
-    else line = l1_access(l1d_lines, l1d_meta, &l1d_stats, HW11_L1_DATA_ASSOC, L1D_INDEX, mem_addr, 1);
+    if (type == INSTR) line = l1_access(l1i_lines, l1i_meta, &l1i_stats, HW11_L1_INSTR_ASSOC, L1I_INDEX, mem_addr, 1, INSTR);
+    else line = l1_access(l1d_lines, l1d_meta, &l1d_stats, HW11_L1_DATA_ASSOC, L1D_INDEX, mem_addr, 1, DATA);
     line->data[mem_addr & ((1ULL << OFFSET) - 1)] = value;
 }
 

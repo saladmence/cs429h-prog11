@@ -855,6 +855,65 @@ int test_write_through_stale_peer_refetches(void) {
 }
 
 // =============================================================================
+// TEST 36: Dirty writeback invalidates stale peer copy
+// =============================================================================
+int test_dirty_writeback_invalidates_peer(void) {
+    init_cache(LRU);
+
+    uint64_t addr = 0x18000;
+    uint64_t conflict1 = addr + 0x4000;
+    uint64_t conflict2 = addr + 0x8000;
+
+    memory[addr] = 0x21;
+
+    read_cache(addr, INSTR);
+    write_cache(addr, 0x66, DATA);
+
+    // Evict the dirty L1D line so its data is written back to L2.
+    read_cache(conflict1, DATA);
+    read_cache(conflict2, DATA);
+
+    if (get_l1_data_cache_line(addr) != NULL) FAIL("dirty data line should be evicted from L1D");
+    if (get_l1_instr_cache_line(addr) != NULL) FAIL("stale L1I copy should be invalidated on writeback");
+    if (read_cache(addr, INSTR) != 0x66) FAIL("instruction side should refetch updated value");
+
+    PASS; return 1;
+}
+
+// =============================================================================
+// TEST 37: Random policy is deterministic across init
+// =============================================================================
+int test_random_reinit_is_deterministic(void) {
+    uint64_t a0 = 0x0000;
+    uint64_t a1 = 0x4000;
+    uint64_t a2 = 0x8000;
+
+    init_cache(RANDOM);
+    read_cache(a0, DATA);
+    read_cache(a1, DATA);
+    read_cache(a2, DATA);
+
+    int first_present0 = get_l1_data_cache_line(a0) != NULL;
+    int first_present1 = get_l1_data_cache_line(a1) != NULL;
+    int first_present2 = get_l1_data_cache_line(a2) != NULL;
+
+    init_cache(RANDOM);
+    read_cache(a0, DATA);
+    read_cache(a1, DATA);
+    read_cache(a2, DATA);
+
+    int second_present0 = get_l1_data_cache_line(a0) != NULL;
+    int second_present1 = get_l1_data_cache_line(a1) != NULL;
+    int second_present2 = get_l1_data_cache_line(a2) != NULL;
+
+    if (first_present0 != second_present0) FAIL("random victim should repeat after reinit");
+    if (first_present1 != second_present1) FAIL("random victim should repeat after reinit");
+    if (first_present2 != second_present2) FAIL("random victim should repeat after reinit");
+
+    PASS; return 1;
+}
+
+// =============================================================================
 // TEST 30: Stress test - many accesses
 // =============================================================================
 int test_stress(void) {
@@ -936,6 +995,7 @@ int main(int argc, char *argv[]) {
     run_test(test_l2_inclusive_eviction_dirty_preserves_data, "test_l2_inclusive_eviction_dirty_preserves_data");
     run_test(test_cache_line_tag_field, "test_cache_line_tag_field");
     run_test(test_write_through_stale_peer_refetches, "test_write_through_stale_peer_refetches");
+    run_test(test_dirty_writeback_invalidates_peer, "test_dirty_writeback_invalidates_peer");
 
     // Cache structure
     run_test(test_l1i_direct_mapped, "test_l1i_direct_mapped");
@@ -952,6 +1012,7 @@ int main(int argc, char *argv[]) {
 
     // Random policy
     run_test(test_random_policy, "test_random_policy");
+    run_test(test_random_reinit_is_deterministic, "test_random_reinit_is_deterministic");
 
     // Edge cases
     run_test(test_large_addresses, "test_large_addresses");
