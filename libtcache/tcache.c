@@ -93,7 +93,12 @@ static void invalidate_peer_l1_copy(mem_type_t source_type, uint64_t addr) {
 }
 
 static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr, mem_type_t source_type) {
-    cache_line_t *l2_line = l2_access(addr, true);
+    // Find L2 line without updating LRU (silent writeback from L1 eviction)
+    cache_line_t *l2_line = find_line(l2_lines, l2_meta, HW11_L2_ASSOC, L2_INDEX, addr);
+    if (l2_line == NULL) {
+        // Line not in L2 (shouldn't happen due to inclusion), allocate via l2_access
+        l2_line = l2_access(addr, true);
+    }
     memcpy(l2_line->data, line->data, LINE_SIZE);
     l2_line->modified = 1;
     invalidate_peer_l1_copy(source_type, addr);
