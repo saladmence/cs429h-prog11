@@ -100,21 +100,19 @@ static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr, mem_type
 }
 
 typedef struct {
-    bool retouched_l1d;
-    bool invalidated_l1i;
+    bool had_dirty_child;
 } l2_child_result_t;
 
-static l2_child_result_t write_back_dirty_l1_children_to_l2(cache_line_t *set_lines, cache_metadata *set_meta, int victim, uint64_t victim_addr) {
-    l2_child_result_t result = { false, false };
+static l2_child_result_t write_back_dirty_l1_children_to_l2(cache_line_t *set_lines, int victim, uint64_t victim_addr) {
+    l2_child_result_t result = { false };
 
     cache_line_t *l1d_line = find_line(l1d_lines, l1d_meta, HW11_L1_DATA_ASSOC, L1D_INDEX, victim_addr);
     if (l1d_line != NULL && l1d_line->modified) {
         l2_stats.accesses++;
         memcpy(set_lines[victim].data, l1d_line->data, LINE_SIZE);
         set_lines[victim].modified = 1;
-        l1d_line->modified = 0;
-        update_lru(set_meta, HW11_L2_ASSOC, victim);
-        result.retouched_l1d = true;
+        invalidate_line(l1d_lines, l1d_meta, HW11_L1_DATA_ASSOC, L1D_INDEX, victim_addr);
+        result.had_dirty_child = true;
     }
 
     cache_line_t *l1i_line = find_line(l1i_lines, l1i_meta, HW11_L1_INSTR_ASSOC, L1I_INDEX, victim_addr);
@@ -123,7 +121,7 @@ static l2_child_result_t write_back_dirty_l1_children_to_l2(cache_line_t *set_li
         memcpy(set_lines[victim].data, l1i_line->data, LINE_SIZE);
         set_lines[victim].modified = 1;
         invalidate_line(l1i_lines, l1i_meta, HW11_L1_INSTR_ASSOC, L1I_INDEX, victim_addr);
-        result.invalidated_l1i = true;
+        result.had_dirty_child = true;
     }
 
     return result;
@@ -227,10 +225,7 @@ cache_line_t *l2_access(uint64_t addr, bool write_back) {
 
     if (set_lines[victim].valid) {
         uint64_t victim_addr = reconstruct_addr(set_meta[victim].tag, index, L2_INDEX);
-        l2_child_result_t child_result = write_back_dirty_l1_children_to_l2(set_lines, set_meta, victim, victim_addr);
-        if (child_result.retouched_l1d && !child_result.invalidated_l1i) {
-            victim = pick_victim(set_lines, set_meta, HW11_L2_ASSOC);
-        }
+        write_back_dirty_l1_children_to_l2(set_lines, victim, victim_addr);
     }
 
     if (set_lines[victim].valid) {
@@ -266,8 +261,6 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
     uint64_t tag = get_tag(addr, index_bits);
     cache_line_t *set_lines = &lines[index*ways];
     cache_metadata *set_meta = &meta[index*ways];
-    uint8_t fetched_data[LINE_SIZE];
-    bool fetched_from_l2 = false;
 
     for (int w = 0; w < ways; w++) { // checking for hits
         if (set_lines[w].valid && set_meta[w].tag == tag) {
@@ -278,24 +271,10 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
     }
 
     stats->misses++;
-    bool has_invalid = false;
-    bool has_modified = false;
-    for (int w = 0; w < ways; w++) {
-        if (!set_lines[w].valid) {
-            has_invalid = true;
-        }
-        if (set_lines[w].valid && set_lines[w].modified) {
-            has_modified = true;
-        }
-    }
-
-    // On clean misses, fetch from L2 before consuming random victim choice in L1.
-    if (has_invalid || !has_modified) {
-        uint64_t line_base = addr & ~((uint64_t)(LINE_SIZE - 1));
-        cache_line_t *l2_line = l2_access(line_base, 0);
-        memcpy(fetched_data, l2_line->data, LINE_SIZE);
-        fetched_from_l2 = true;
-    }
+    uint8_t fetched_data[LINE_SIZE];
+    uint64_t line_base = addr & ~((uint64_t)(LINE_SIZE - 1));
+    cache_line_t *l2_line = l2_access(line_base, 0);
+    memcpy(fetched_data, l2_line->data, LINE_SIZE);
 
     int victim = pick_victim(set_lines, set_meta, ways);
 
@@ -304,14 +283,7 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
         write_back_l1_line_to_l2(&set_lines[victim], wb, type);
     }
 
-    if (fetched_from_l2) {
-        memcpy(set_lines[victim].data, fetched_data, LINE_SIZE);
-    } else {
-        uint64_t line_base = addr & ~((uint64_t)(LINE_SIZE - 1));
-        cache_line_t *l2_line = l2_access(line_base, 0);
-        memcpy(set_lines[victim].data, l2_line->data, LINE_SIZE);
-    }
-
+    memcpy(set_lines[victim].data, fetched_data, LINE_SIZE);
     set_lines[victim].valid = 1;
     set_lines[victim].modified = write ? 1 : 0;
     set_lines[victim].tag = tag;
