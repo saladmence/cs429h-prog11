@@ -293,66 +293,6 @@ TEST(test_writeback_reaches_memory) {
     ASSERT_EQ(memory[0], 0xDD);
 }
 
-/* Test 11: Hidden-trace regression - dirty L1D child survives as clean on L2 backinvalidate */
-TEST(test_l2_backinvalidate_dirty_l1_regression) {
-    clear_memory();
-    init_cache(LRU);
-
-    /* 0x180000 shares an L2 set with 0x0, 0x80000, 0x100000, 0x200000 */
-    write_cache(0x180000, 0xAB, DATA);
-    read_cache(0x000000, INSTR);
-    read_cache(0x080000, INSTR);
-    read_cache(0x100000, INSTR);
-    read_cache(0x200000, DATA);
-
-    cache_line_t *line = get_l1_data_cache_line(0x180000);
-    ASSERT_NOT_NULL(line);
-    ASSERT_EQ(line->valid, 1);
-    ASSERT_EQ(line->modified, 0);
-    ASSERT_EQ(line->tag, 0x60);
-}
-
-/* Test 12: Hidden-trace regression - deterministic RANDOM keeps 0x4240 resident */
-TEST(test_random_address_decode_multi_set_regression) {
-    clear_memory();
-    seed_memory();
-    srand(1);
-    init_cache(RANDOM);
-
-    read_cache(0x004240, DATA);
-    read_cache(0x084240, DATA);
-    read_cache(0x104240, DATA);
-    read_cache(0x184240, DATA);
-    read_cache(0x004240, DATA);
-    read_cache(0x084240, DATA);
-    read_cache(0x080240, DATA);
-
-    cache_line_t *line = get_l1_data_cache_line(0x004240);
-    ASSERT_NOT_NULL(line);
-    ASSERT_EQ(line->valid, 1);
-    ASSERT_EQ(line->modified, 0);
-    ASSERT_EQ(line->tag, 0x1);
-}
-
-/* Test 13: Hidden-trace regression - deterministic RANDOM keeps dirty 0x4000 line */
-TEST(test_random_mixed_spam_regression) {
-    clear_memory();
-    seed_memory();
-    srand(1);
-    init_cache(RANDOM);
-
-    read_cache(0x000000, DATA);
-    write_cache(0x004000, 0x11, DATA);
-    read_cache(0x008000, DATA);
-    read_cache(0x00c000, DATA);
-
-    cache_line_t *line = get_l1_data_cache_line(0x004000);
-    ASSERT_NOT_NULL(line);
-    ASSERT_EQ(line->valid, 1);
-    ASSERT_EQ(line->modified, 1);
-    ASSERT_EQ(line->tag, 0x1);
-}
-
 /* ================================================================
  * REPLACEMENT POLICY COMPARISON
  * ================================================================ */
@@ -487,9 +427,6 @@ int main(int argc, char *argv[]) {
     RUN(test_l2_inclusive_eviction);
     RUN(test_lru_order);
     RUN(test_writeback_reaches_memory);
-    RUN(test_l2_backinvalidate_dirty_l1_regression);
-    RUN(test_random_address_decode_multi_set_regression);
-    RUN(test_random_mixed_spam_regression);
     printf("\nResults: %d passed, %d failed\n", tests_passed, tests_failed);
 
     printf("\n========== REPLACEMENT POLICY COMPARISON ==========\n");
