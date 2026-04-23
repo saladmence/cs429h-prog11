@@ -730,6 +730,106 @@ int test_writeback_full_line(void) {
 }
 
 // =============================================================================
+// TEST 31: Coherence from L1D write to L1I read goes through L2
+// =============================================================================
+int test_coherence_l1d_to_l1i(void) {
+    init_cache(LRU);
+    uint64_t addr = 0x12000;
+
+    memory[addr] = 0x10;
+
+    // Populate instruction cache with the old value.
+    if (read_cache(addr, INSTR) != 0x10) FAIL("initial instruction read mismatch");
+
+    // Write a new value through L1D. This should invalidate the L1I copy.
+    write_cache(addr, 0x5A, DATA);
+
+    cache_line_t* l1i_line = get_l1_instr_cache_line(addr);
+    if (l1i_line != NULL) FAIL("instruction copy should be invalidated by data write");
+
+    // Reading as instruction should now observe the latest value via L2.
+    if (read_cache(addr, INSTR) != 0x5A) FAIL("instruction read should observe coherent value");
+
+    cache_line_t* l2_line = get_l2_cache_line(addr);
+    if (l2_line == NULL) FAIL("L2 should contain the coherent line");
+    if (l2_line->data[0] != 0x5A) FAIL("L2 should receive the written-back value");
+
+    PASS; return 1;
+}
+
+// =============================================================================
+// TEST 32: L2 inclusive eviction invalidates clean L1 copies
+// =============================================================================
+int test_l2_inclusive_eviction_invalidates_l1(void) {
+    init_cache(LRU);
+
+    uint64_t base = 0x2000;
+    uint64_t conflict = 0x80000;
+
+    read_cache(base, INSTR);
+
+    for (int i = 1; i < 4; i++) {
+        read_cache(base + i * conflict, DATA);
+    }
+
+    if (get_l1_instr_cache_line(base) == NULL) FAIL("base line should start in L1I");
+    if (get_l2_cache_line(base) == NULL) FAIL("base line should start in L2");
+
+    read_cache(base + 4 * conflict, DATA);
+
+    if (get_l2_cache_line(base) != NULL) FAIL("base line should be evicted from L2");
+    if (get_l1_instr_cache_line(base) != NULL) FAIL("inclusive L2 eviction should invalidate L1I");
+
+    PASS; return 1;
+}
+
+// =============================================================================
+// TEST 33: Dirty L1 copy is preserved on inclusive L2 eviction
+// =============================================================================
+int test_l2_inclusive_eviction_dirty_preserves_data(void) {
+    init_cache(LRU);
+
+    uint64_t base = 0x3000;
+    uint64_t l2_conflict = 0x80000;
+
+    write_cache(base, 0xD4, INSTR);
+
+    for (int i = 1; i < 4; i++) {
+        read_cache(base + i * l2_conflict, DATA);
+    }
+
+    if (get_l1_instr_cache_line(base) == NULL) FAIL("base line should still reside in L1I before L2 eviction");
+
+    read_cache(base + 4 * l2_conflict, DATA);
+
+    if (get_l2_cache_line(base) != NULL) FAIL("base line should be evicted from L2");
+    if (get_l1_instr_cache_line(base) != NULL) FAIL("inclusive L2 eviction should invalidate dirty L1I line");
+    if (memory[base] != 0xD4) FAIL("dirty data should be written to memory when L2 evicts");
+
+    PASS; return 1;
+}
+
+// =============================================================================
+// TEST 34: Exported cache line tag stays in sync
+// =============================================================================
+int test_cache_line_tag_field(void) {
+    init_cache(LRU);
+
+    uint64_t addr = 0x12340;
+
+    read_cache(addr, DATA);
+
+    cache_line_t* l1_line = get_l1_data_cache_line(addr);
+    cache_line_t* l2_line = get_l2_cache_line(addr);
+
+    if (l1_line == NULL || l2_line == NULL) FAIL("line should exist in both caches");
+    if (l1_line->tag != (addr >> (6 + 8))) FAIL("L1D exported tag incorrect");
+    if (l2_line->tag != (addr >> (6 + 13))) FAIL("L2 exported tag incorrect");
+
+    PASS; return 1;
+}
+
+// =============================================================================
 // TEST 30: Stress test - many accesses
 // =============================================================================
 int test_stress(void) {
@@ -806,6 +906,10 @@ int main(int argc, char *argv[]) {
     run_test(test_clean_eviction_no_writeback, "test_clean_eviction_no_writeback");
     run_test(test_l2_writeback_to_memory, "test_l2_writeback_to_memory");
     run_test(test_writeback_full_line, "test_writeback_full_line");
+    run_test(test_coherence_l1d_to_l1i, "test_coherence_l1d_to_l1i");
+    run_test(test_l2_inclusive_eviction_invalidates_l1, "test_l2_inclusive_eviction_invalidates_l1");
+    run_test(test_l2_inclusive_eviction_dirty_preserves_data, "test_l2_inclusive_eviction_dirty_preserves_data");
+    run_test(test_cache_line_tag_field, "test_cache_line_tag_field");
 
     // Cache structure
     run_test(test_l1i_direct_mapped, "test_l1i_direct_mapped");
