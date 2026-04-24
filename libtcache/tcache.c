@@ -35,9 +35,21 @@ static cache_stats_t l1d_stats;
 static cache_stats_t l2_stats;
 
 static replacement_policy_e global_policy;
+static unsigned int pending_rand_seed = 12345;
+static int pending_rand_seed_valid = 0;
 
 static cache_line_t *l2_access(uint64_t addr, bool write_back);
 static void update_lru(cache_metadata *set_meta, int ways, int start);
+static cache_line_t *find_l2_line_with_way(uint64_t addr, int *out_way);
+
+void tcache_seed_random(unsigned int seed) {
+    pending_rand_seed = seed;
+    pending_rand_seed_valid = 1;
+}
+
+static int next_replacement_random(void) {
+    return rand();
+}
 
 uint64_t get_index(uint64_t addr, int index) {
     //uint64_t offset = addr & ((1ULL << OFFSET) - 1);
@@ -92,11 +104,35 @@ static void invalidate_peer_l1_copy(mem_type_t source_type, uint64_t addr) {
     }
 }
 
-static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr, mem_type_t source_type) {
-    cache_line_t *l2_line = l2_access(addr, true);
+static cache_line_t *find_l2_line_with_way(uint64_t addr, int *out_way) {
+    uint64_t index = get_index(addr, L2_INDEX);
+    uint64_t tag = get_tag(addr, L2_INDEX);
+    cache_line_t *set_lines = &l2_lines[index * HW11_L2_ASSOC];
+    cache_metadata *set_meta = &l2_meta[index * HW11_L2_ASSOC];
+
+    for (int w = 0; w < HW11_L2_ASSOC; w++) {
+        if (set_lines[w].valid && set_meta[w].tag == tag) {
+            if (out_way != NULL) {
+                *out_way = w;
+            }
+            return &set_lines[w];
+        }
+    }
+
+    return NULL;
+}
+
+static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr) {
+    int l2_way;
+    cache_line_t *l2_line = find_l2_line_with_way(addr, &l2_way);
+    if (l2_line == NULL) {
+        return;
+    }
+
+    l2_stats.accesses++;
+    update_lru(&l2_meta[get_index(addr, L2_INDEX) * HW11_L2_ASSOC], HW11_L2_ASSOC, l2_way);
     memcpy(l2_line->data, line->data, LINE_SIZE);
     l2_line->modified = 1;
-    invalidate_peer_l1_copy(source_type, addr);
 }
 
 typedef struct {
@@ -144,7 +180,7 @@ static void maintain_l1_coherence(uint64_t addr, mem_type_t type) {
     }
 
     if (peer_line->modified) {
-        write_back_l1_line_to_l2(peer_line, addr, (type == INSTR) ? DATA : INSTR);
+        write_back_l1_line_to_l2(peer_line, addr);
         peer_line->modified = 0;
         invalidate_line(target_lines, target_meta, target_ways, target_index_bits, addr);
     }
@@ -174,7 +210,7 @@ int pick_victim(cache_line_t *set_lines, cache_metadata *set_meta, int ways) {
         for (int w = 1; w < ways; w++) {
             if (set_meta[w].lru > set_meta[victim].lru) victim = w;
         }
-    } else victim = rand() % ways;
+    } else victim = next_replacement_random() % ways;
     return victim;
 }
 
@@ -203,6 +239,11 @@ void init_cache(replacement_policy_e policy) {
         for (int way = 0; way < HW11_L2_ASSOC; way++) {
             l2_meta[set * HW11_L2_ASSOC + way].lru = way;
         }
+    }
+
+    if (pending_rand_seed_valid) {
+        srand(pending_rand_seed);
+        pending_rand_seed_valid = 0;
     }
 }
 
@@ -280,7 +321,7 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
 
     if (set_lines[victim].valid && set_lines[victim].modified) { // writeback to l2
         uint64_t wb = reconstruct_addr(set_meta[victim].tag, index, index_bits);
-        write_back_l1_line_to_l2(&set_lines[victim], wb, type);
+        write_back_l1_line_to_l2(&set_lines[victim], wb);
     }
 
     memcpy(set_lines[victim].data, fetched_data, LINE_SIZE);
