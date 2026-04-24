@@ -206,6 +206,10 @@ int pick_victim(cache_line_t *set_lines, cache_metadata *set_meta, int ways) {
         if (!set_lines[i].valid) return i;
     }
 
+    if (ways == 1) {
+        return 0;
+    }
+
     if (global_policy == LRU) {
         for (int w = 1; w < ways; w++) {
             if (set_meta[w].lru > set_meta[victim].lru) victim = w;
