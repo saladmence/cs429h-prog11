@@ -96,7 +96,6 @@ static void write_back_l1_line_to_l2(cache_line_t *line, uint64_t addr, mem_type
     cache_line_t *l2_line = l2_access(addr, true);
     memcpy(l2_line->data, line->data, LINE_SIZE);
     l2_line->modified = 1;
-    invalidate_peer_l1_copy(source_type, addr);
 }
 
 typedef struct {
@@ -271,24 +270,30 @@ cache_line_t* l1_access(cache_line_t* lines, cache_metadata *meta, cache_stats_t
     }
 
     stats->misses++;
+
+    // 1. Pick victim BEFORE accessing L2 to ensure rand() is consumed in the correct order
+    int victim = pick_victim(set_lines, set_meta, ways);
+
+    // 2. Write back the dirty victim if necessary
+    if (set_lines[victim].valid && set_lines[victim].modified) { 
+        uint64_t wb = reconstruct_addr(set_meta[victim].tag, index, index_bits);
+        write_back_l1_line_to_l2(&set_lines[victim], wb, type);
+    }
+
+    // 3. Fetch from L2
     uint8_t fetched_data[LINE_SIZE];
     uint64_t line_base = addr & ~((uint64_t)(LINE_SIZE - 1));
     cache_line_t *l2_line = l2_access(line_base, 0);
     memcpy(fetched_data, l2_line->data, LINE_SIZE);
 
-    int victim = pick_victim(set_lines, set_meta, ways);
-
-    if (set_lines[victim].valid && set_lines[victim].modified) { // writeback to l2
-        uint64_t wb = reconstruct_addr(set_meta[victim].tag, index, index_bits);
-        write_back_l1_line_to_l2(&set_lines[victim], wb, type);
-    }
-
+    // 4. Populate the fetched line into the chosen L1 victim slot
     memcpy(set_lines[victim].data, fetched_data, LINE_SIZE);
     set_lines[victim].valid = 1;
     set_lines[victim].modified = write ? 1 : 0;
     set_lines[victim].tag = tag;
     set_meta[victim].tag = tag;
     update_lru(set_meta, ways, victim);
+    
     return &set_lines[victim];
 }
 
